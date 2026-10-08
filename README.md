@@ -17,10 +17,10 @@ An OpenAI-compatible HTTP API (`/v1/`) that proxies requests to [chatjimmy.ai](h
 
 ```bash
 # Install dependencies
-pip install fastapi pydantic requests uvicorn
+uv sync --extra dev
 
 # Run server
-uvicorn server:app --host 0.0.0.0 --port 8000
+uv run uvicorn server:app --host 0.0.0.0 --port 8000
 
 # API base URL
 http://localhost:8000/v1/

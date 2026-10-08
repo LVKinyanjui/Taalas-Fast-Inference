@@ -158,11 +158,11 @@ def map_openai_params_to_chatjimmy(request: ChatCompletionRequest) -> Dict[str, 
         "topK": DEFAULT_TOP_K,
     }
 
-    # Map temperature -> topK (approximate; ChatJimmy only has topK)
-    # Higher temperature = more random = higher topK
+    # Map temperature -> topK (must be <= 8 for upstream)
     if request.temperature is not None:
-        # Rough mapping: temp 0.0 -> topK 1, temp 1.0 -> topK 8, temp 2.0 -> topK 50+
-        chat_options["topK"] = max(1, int(request.temperature * 8 + 1))
+        # map temp 0.0-2.0 to topK 1-8
+        mapped_topk = int(request.temperature * 4 + 1)
+        chat_options["topK"] = max(1, min(8, mapped_topk))
 
     # Map top_p if provided (ChatJimmy doesn't support top_p directly)
     # Could adjust topK based on top_p, but we'll just log it
@@ -496,19 +496,24 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
             }
         )
 
-    except requests.Timeout:
+    except requests.Timeout as e:
+        print(f"[DEBUG] Upstream timeout: {e}")
         return create_error_response(
             "Upstream request timed out",
             "server_error",
             504
         )
     except requests.HTTPError as e:
+        print(f"[DEBUG] Upstream HTTP error: {e.response.status_code} - {e.response.text}")
         return create_error_response(
-            f"Upstream error: {e.response.status_code}",
+            f"Upstream error: {e.response.status_code} - {e.response.text[:200]}",
             "server_error",
             502
         )
     except Exception as e:
+        import traceback
+        print(f"[DEBUG] Internal exception: {str(e)}")
+        traceback.print_exc()
         return create_error_response(
             f"Internal error: {str(e)}",
             "server_error",
