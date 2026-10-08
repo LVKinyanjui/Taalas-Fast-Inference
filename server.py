@@ -4,6 +4,7 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Union, Literal
 import requests
+import asyncio
 import json
 import time
 import uuid
@@ -193,14 +194,20 @@ def map_openai_params_to_chatjimmy(request: ChatCompletionRequest) -> Dict[str, 
     return chat_options
 
 
-def convert_messages_to_chatjimmy(messages: List[ChatMessage]) -> tuple[List[Dict], str]:
+def convert_messages_to_chatjimmy(messages: List[Union[ChatMessage, Dict[str, Any]]]) -> tuple[List[Dict], str]:
     """Convert OpenAI messages to ChatJimmy format. Returns (chat_messages, system_prompt)."""
     system_prompt = ""
     chat_messages = []
 
     for msg in messages:
-        role = msg.role
-        content = msg.content
+        if isinstance(msg, dict):
+            role = msg.get("role")
+            content = msg.get("content", "")
+            name = msg.get("name", "")
+        else:
+            role = msg.role
+            content = msg.content
+            name = msg.name or ""
 
         # Handle multi-modal content (extract text)
         if isinstance(content, list):
@@ -214,11 +221,11 @@ def convert_messages_to_chatjimmy(messages: List[ChatMessage]) -> tuple[List[Dic
             system_prompt += (content or "") + "\n"
         elif role == "tool":
             # Tool results - prepend with context
-            tool_content = f"Tool result ({msg.name or 'unknown'}): {content}"
+            tool_content = f"Tool result ({name or 'unknown'}): {content}"
             chat_messages.append({"role": "user", "content": tool_content})
         elif role == "function":
             # Legacy function calling
-            tool_content = f"Function result ({msg.name}): {content}"
+            tool_content = f"Function result ({name}): {content}"
             chat_messages.append({"role": "user", "content": tool_content})
         else:
             chat_messages.append({"role": role, "content": content or ""})
@@ -456,20 +463,39 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
                 system_fingerprint=f"fp_{uuid.uuid4().hex[:12]}"
             )
 
-        # Streaming response
+        # Streaming response with simulated incremental chunks for Zed / UI clients
         async def generate():
-            # First chunk with role
-            chunk = ChatCompletionChunk(
+            # Initial role chunk
+            role_chunk = ChatCompletionChunk(
                 id=completion_id,
                 created=created,
                 model=body.model,
                 choices=[ChatCompletionChunkChoice(
                     index=0,
-                    delta={"role": "assistant", "content": text or ""},
+                    delta={"role": "assistant", "content": ""},
                     finish_reason=None
                 )]
             )
-            yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+            yield f"data: {role_chunk.model_dump_json(exclude_none=True)}\n\n"
+            await asyncio.sleep(0.01)
+
+            if text:
+                # Stream content in small word/character chunks so Zed renders it progressively
+                chunk_size = 4  # characters per chunk
+                for i in range(0, len(text), chunk_size):
+                    piece = text[i:i + chunk_size]
+                    content_chunk = ChatCompletionChunk(
+                        id=completion_id,
+                        created=created,
+                        model=body.model,
+                        choices=[ChatCompletionChunkChoice(
+                            index=0,
+                            delta={"content": piece},
+                            finish_reason=None
+                        )]
+                    )
+                    yield f"data: {content_chunk.model_dump_json(exclude_none=True)}\n\n"
+                    await asyncio.sleep(0.01)
 
             # Final chunk with finish_reason and usage
             final_chunk = ChatCompletionChunk(
